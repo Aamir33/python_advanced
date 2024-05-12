@@ -1,0 +1,58 @@
+import fitz
+from fastapi import FastAPI
+from transformers import RagTokenizer, RagRetriever, RagTokenForGeneration
+from transformers import pipeline
+
+class TextbookProcessor:
+    def __init__(self, pdf_path, selected_chapters):
+        self.pdf_path = pdf_path
+        self.selected_chapters = selected_chapters
+        self.index = None
+        self.text = self.extract_text_from_pdf()
+
+    def extract_text_from_pdf(self):
+        text = ""
+        with fitz.open(self.pdf_path) as doc:
+            for chapter_num in self.selected_chapters:
+                chapter = doc[chapter_num]
+                text += chapter.get_text()
+        return text
+
+    def create_index(self):
+        paragraphs = self.text.split("\n")
+        self.index = {}
+        start = 0
+        for i, para in enumerate(paragraphs):
+            end = start + len(para)
+            self.index[f"Paragraph {i+1}"] = [start, end]
+            start = end + 1
+
+    def answer_question(self, question):
+        if not self.index:
+            self.create_index()
+        tokenizer = RagTokenizer.from_pretrained("facebook/rag-token-base")
+        retriever = RagRetriever.from_pretrained("facebook/rag-token-base", index=self.index)
+        model = RagTokenForGeneration.from_pretrained("facebook/rag-token-base")
+        rag_pipeline = pipeline("rag", model=model, retriever=retriever, tokenizer=tokenizer)
+        answer = rag_pipeline(question)
+        return answer
+
+app = FastAPI()
+processor = None
+
+@app.get("/initialize")
+async def initialize_processor(pdf_path: str, selected_chapters: list):
+    global processor
+    processor = TextbookProcessor(pdf_path, selected_chapters)
+    return {"message": "Textbook processor initialized successfully."}
+
+@app.post("/ask")
+async def ask_question(question: str):
+    if processor is None:
+        return {"error": "Textbook processor not initialized. Please call /initialize first."}
+    answer = processor.answer_question(question)
+    return {"answer": answer}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)
